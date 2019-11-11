@@ -28,6 +28,9 @@ import optimization
 import tokenization
 import six
 import tensorflow as tf
+from kungfu import current_rank, current_cluster_size
+from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
+from kungfu.tensorflow.ops.collective import barrier
 
 flags = tf.flags
 
@@ -658,6 +661,8 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       end_loss = compute_loss(end_logits, end_positions)
 
       total_loss = (start_loss + end_loss) / 2.0
+      # add loss to summary for tensorboard
+      tf.summary.scalar("loss", total_loss)
 
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu)
@@ -1130,6 +1135,10 @@ def main(_):
 
   validate_flags_or_throw(bert_config)
 
+  # KungFu
+  # use individual output_dir for each process
+  FLAGS.output_dir = os.path.join(FLAGS.output_dir, "p" + str(current_rank()))
+
   tf.gfile.MakeDirs(FLAGS.output_dir)
 
   tokenizer = tokenization.FullTokenizer(
@@ -1161,9 +1170,15 @@ def main(_):
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
+    # KungFu
+    num_train_steps = num_train_steps // current_cluster_size()
+    num_warmup_steps = num_warmup_steps // current_cluster_size()
+
     # Pre-shuffle the input to avoid having to make a very large shuffle
     # buffer in in the `input_fn`.
-    rng = random.Random(12345)
+    # KungFu
+    # use current_rank as seed so that each node has a different permutation of the data
+    rng = random.Random(current_rank())
     rng.shuffle(train_examples)
 
   model_fn = model_fn_builder(
@@ -1212,9 +1227,17 @@ def main(_):
         seq_length=FLAGS.max_seq_length,
         is_training=True,
         drop_remainder=True)
-    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
 
-  if FLAGS.do_predict:
+    # KungFu
+    # add hook so that all nodes the training with equal variables
+    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=[BroadcastGlobalVariablesHook()])
+
+  # KungFu
+  barrier()
+
+  # KungFu
+  # only use process 0 to predict
+  if FLAGS.do_predict and current_rank() == 0:
     eval_examples = read_squad_examples(
         input_file=FLAGS.predict_file, is_training=False)
 

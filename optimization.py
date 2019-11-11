@@ -20,6 +20,7 @@ from __future__ import print_function
 
 import re
 import tensorflow as tf
+from kungfu.tensorflow.optimizers import SynchronousSGDOptimizer, SynchronousAveragingOptimizer, PairAveragingOptimizer
 
 
 def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu):
@@ -63,6 +64,10 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu):
       beta_2=0.999,
       epsilon=1e-6,
       exclude_from_weight_decay=["LayerNorm", "layer_norm", "bias"])
+
+  # KungFu
+  # wrap the optimizer in a KungFu optimizer
+  optimizer = PairAveragingOptimizer(optimizer)
 
   if use_tpu:
     optimizer = tf.contrib.tpu.CrossShardOptimizer(optimizer)
