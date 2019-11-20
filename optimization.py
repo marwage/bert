@@ -67,7 +67,7 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu):
 
   # KungFu
   # wrap the optimizer in a KungFu optimizer
-  optimizer = PairAveragingOptimizer(optimizer)
+  optimizer = SynchronousAveragingOptimizer(optimizer)
 
   if use_tpu:
     optimizer = tf.contrib.tpu.CrossShardOptimizer(optimizer)

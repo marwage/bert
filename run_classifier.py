@@ -20,11 +20,14 @@ from __future__ import print_function
 
 import collections
 import csv
+import random
 import os
 import modeling
 import optimization
 import tokenization
 import tensorflow as tf
+from kungfu import current_rank, current_cluster_size, run_barrier
+from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
 
 flags = tf.flags
 
@@ -783,6 +786,10 @@ def convert_examples_to_features(examples, label_list, max_seq_length,
 def main(_):
   tf.logging.set_verbosity(tf.logging.INFO)
 
+  # KungFu
+  # use individual output_dir for each process
+  FLAGS.output_dir = os.path.join(FLAGS.output_dir, "p" + str(current_rank()))
+
   processors = {
       "cola": ColaProcessor,
       "mnli": MnliProcessor,
@@ -844,6 +851,14 @@ def main(_):
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
+    # KungFu
+    # reduce the number of training steps for each worker
+    num_train_steps = num_train_steps // current_cluster_size()
+    num_warmup_steps = num_warmup_steps // current_cluster_size()
+    # shuffle train examples for each worker differently
+    rng = random.Random(current_rank())
+    rng.shuffle(train_examples)
+
   model_fn = model_fn_builder(
       bert_config=bert_config,
       num_labels=len(label_list),
@@ -877,7 +892,13 @@ def main(_):
         seq_length=FLAGS.max_seq_length,
         is_training=True,
         drop_remainder=True)
-    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+
+    # KungFu
+    # add hook so that all nodes the training with equal variables
+    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=[BroadcastGlobalVariablesHook()])
+
+    # KungFu
+    run_barrier()
 
   if FLAGS.do_eval:
     eval_examples = processor.get_dev_examples(FLAGS.data_dir)

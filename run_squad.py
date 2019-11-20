@@ -28,9 +28,8 @@ import optimization
 import tokenization
 import six
 import tensorflow as tf
-from kungfu import current_rank, current_cluster_size
+from kungfu import current_rank, current_cluster_size, run_barrier
 from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
-from kungfu.tensorflow.ops.collective import barrier
 
 flags = tf.flags
 
@@ -1232,12 +1231,10 @@ def main(_):
     # add hook so that all nodes the training with equal variables
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=[BroadcastGlobalVariablesHook()])
 
-  # KungFu
-  barrier()
+    # KungFu
+    run_barrier()
 
-  # KungFu
-  # only use process 0 to predict
-  if FLAGS.do_predict and current_rank() == 0:
+  if FLAGS.do_predict:
     eval_examples = read_squad_examples(
         input_file=FLAGS.predict_file, is_training=False)
 
