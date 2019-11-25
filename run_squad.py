@@ -1167,11 +1167,15 @@ def main(_):
         input_file=FLAGS.train_file, is_training=True)
     num_train_steps = int(
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
-    num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
-
     # KungFu
-    num_train_steps = num_train_steps // current_cluster_size()
-    num_warmup_steps = num_warmup_steps // current_cluster_size()
+    print("len(train_examples) " + str(len(train_examples)))
+    print("FLAGS.train_batch_size " + str(FLAGS.train_batch_size))
+    print("FLAGS.num_train_epochs " + str(FLAGS.num_train_epochs))
+    print("num_train_steps " + str(num_train_steps))
+    num_train_steps = 10
+    # num_train_steps = num_train_steps // current_cluster_size()
+
+    num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
     # Pre-shuffle the input to avoid having to make a very large shuffle
     # buffer in in the `input_fn`.
