@@ -21,7 +21,7 @@ from __future__ import print_function
 import re
 import tensorflow as tf
 from kungfu._utils import map_maybe
-from kungfu.tensorflow.ops import all_reduce, group_all_reduce, peer_info
+from kungfu.tensorflow.ops import (group_all_reduce, peer_info)
 
 
 def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, threshold):
@@ -88,33 +88,35 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
 
   # KungFu
   # add averaging over all gradient
-  s_sgd = True
+  s_sgd = tf.get_variable("s_sgd", initializer=0)
   _, num_workers = peer_info()
   np = tf.cast(num_workers, tf.float32)
-  assign_ops = []
-  if s_sgd: # S-SGD
+
+  def s_sgd_fn(optimizer, vars, grads, num_workers):
     summed_grads = group_all_reduce(grads)
-    grads = map_maybe(lambda g: g / np, summed_grads)
-  else: # SMA
-    alpha = 0.1
-    summed_vars = group_all_reduce(tvars)
-    averaged_vars = [g / np for g in summed_vars]
+    grads = map_maybe(lambda g: g / num_workers, summed_grads)
+    (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
+    return optimizer.apply_gradients(
+        zip(grads, tvars), global_step=global_step)
+
+  def sma_fn(optimizer, vars, grads, num_workers, alpha=0.1):
+    summed_vars = group_all_reduce(vars)
+    averaged_vars = [g / num_workers for g in summed_vars]
     assign_ops = [
       tf.assign(v, (1 - alpha) * v + alpha * avg_v)
-      for v, avg_v in zip(tvars, averaged_vars)
+      for v, avg_v in zip(vars, averaged_vars)
     ]
-  # get average loss
-  average_loss = tf.get_variable("average_loss", shape=[])
-  sum_loss = all_reduce(loss)
-  assign_op = tf.assign(average_loss, tf.math.divide(sum_loss, np))
-  tf.summary.scalar("average_loss", average_loss)
-  assign_ops.append(assign_op)
-  # This is how the model was pre-trained.
-  (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
+    (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
+    with tf.control_dependencies(assign_ops):
+      return optimizer.apply_gradients(
+          zip(grads, tvars), global_step=global_step)
 
-  with tf.control_dependencies(assign_ops):
-    train_op = optimizer.apply_gradients(
-        zip(grads, tvars), global_step=global_step)
+  # train_op = tf.cond(tf.math.equal(s_sgd, 0),
+  #     lambda: s_sgd_fn(optimizer, tvars, grads, np),
+  #     lambda: sma_fn(optimizer, tvars, grads, np))
+  train_op = tf.cond(tf.math.equal(s_sgd, 0),
+      lambda: s_sgd_fn(optimizer, tvars, grads, np),
+      lambda: sma_fn(optimizer, tvars, grads, np))
 
   # Normally the global step update is done inside of `apply_gradients`.
   # However, `AdamWeightDecayOptimizer` doesn't do this. But if you use

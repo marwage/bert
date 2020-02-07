@@ -28,24 +28,12 @@ import optimization
 import tokenization
 import six
 import tensorflow as tf
-from kungfu import current_rank, current_cluster_size, run_barrier
+from kungfu import run_barrier
 from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
+from kungfu.tensorflow.experimental.hook import ElasticHook
 from ada_sgd_loss import AdaSGDHook
-from kungfu.tensorflow.hooks import KungFuElasticTrainHook
 from datetime import datetime
 
-class EarlyStoppingHook(tf.train.SessionRunHook):
-  def __init__(self):
-    super(EarlyStoppingHook, self).__init__()
-    self._loss_threshold = 0.3
-    
-  def begin(self):
-    self._loss = tf.get_default_graph().get_tensor_by_name("average_loss:0")
-
-  def after_run(self, run_context, run_values):
-    loss = run_context.session.run(self._loss)
-    if loss < self._loss_threshold:
-      run_context.request_stop()
 
 flags = tf.flags
 
@@ -689,16 +677,41 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
 
       # KungFu
       # log global_step
-      global_step = tf.train.get_or_create_global_step()
+      # global_step = tf.train.get_or_create_global_step()
       # logging_hook = tf.train.LoggingTensorHook({"global_step" : global_step, "total_loss": total_loss}, every_n_iter=1)
-      logging_hook = tf.train.LoggingTensorHook({"global_step" : global_step}, every_n_iter=1)
 
       output_spec = tf.contrib.tpu.TPUEstimatorSpec(
           mode=mode,
           loss=total_loss,
           train_op=train_op,
           scaffold_fn=scaffold_fn,
-          training_hooks = [logging_hook])
+          training_hooks = None)
+
+    elif mode == tf.estimator.ModeKeys.EVAL:
+      seq_length = modeling.get_shape_list(input_ids)[1]
+
+      def compute_loss(logits, positions):
+        one_hot_positions = tf.one_hot(
+            positions, depth=seq_length, dtype=tf.float32)
+        log_probs = tf.nn.log_softmax(logits, axis=-1)
+        loss = -tf.reduce_mean(
+            tf.reduce_sum(one_hot_positions * log_probs, axis=-1))
+        return loss
+
+      start_positions = features["start_positions"]
+      end_positions = features["end_positions"]
+
+      start_loss = compute_loss(start_logits, start_positions)
+      end_loss = compute_loss(end_logits, end_positions)
+
+      total_loss = (start_loss + end_loss) / 2.0
+
+      output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+          mode=mode,
+          loss=total_loss,
+          scaffold_fn=scaffold_fn,
+          training_hooks = None)
+
     elif mode == tf.estimator.ModeKeys.PREDICT:
       predictions = {
           "unique_ids": unique_ids,
@@ -752,10 +765,57 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
     # For eval, we want no shuffling and parallel reading doesn't matter.
     d = tf.data.TFRecordDataset(input_file)
     if is_training:
+      d = d.shuffle(buffer_size=100)
       d = d.repeat()
-      # KungFu
-      # use current_rank as seed
-      d = d.shuffle(buffer_size=100, seed=current_rank())
+
+    d = d.apply(
+        tf.contrib.data.map_and_batch(
+            lambda record: _decode_record(record, name_to_features),
+            batch_size=batch_size,
+            drop_remainder=drop_remainder))
+
+    return d
+
+  return input_fn
+
+
+def eval_input_fn_builder(input_file, seq_length, is_training, drop_remainder):
+  """Creates an `input_fn` closure to be passed to TPUEstimator."""
+
+  name_to_features = {
+      "unique_ids": tf.FixedLenFeature([], tf.int64),
+      "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
+      "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
+      "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
+  }
+
+  if is_training:
+    name_to_features["start_positions"] = tf.FixedLenFeature([], tf.int64)
+    name_to_features["end_positions"] = tf.FixedLenFeature([], tf.int64)
+
+  def _decode_record(record, name_to_features):
+    """Decodes a record to a TensorFlow example."""
+    example = tf.parse_single_example(record, name_to_features)
+
+    # tf.Example only supports tf.int64, but the TPU only supports tf.int32.
+    # So cast all int64 to int32.
+    for name in list(example.keys()):
+      t = example[name]
+      if t.dtype == tf.int64:
+        t = tf.to_int32(t)
+      example[name] = t
+
+    return example
+
+  def input_fn(params):
+    """The actual input function."""
+    batch_size = int(FLAGS.train_batch_size)
+
+    # For training, we want a lot of parallel reading and shuffling.
+    # For eval, we want no shuffling and parallel reading doesn't matter.
+    d = tf.data.TFRecordDataset(input_file)
+    if is_training:
+      d = d.take(256)
 
     d = d.apply(
         tf.contrib.data.map_and_batch(
@@ -1166,7 +1226,7 @@ def main(_):
 
   # KungFu
   # use individual output_dir for each process
-  FLAGS.output_dir = os.path.join(FLAGS.output_dir, "p" + str(current_rank()))
+  FLAGS.output_dir = os.path.join(FLAGS.output_dir, os.getenv("KUNGFU_SELF_SPEC"))
 
   tf.gfile.MakeDirs(FLAGS.output_dir)
 
@@ -1204,7 +1264,7 @@ def main(_):
     num_train_steps = int(
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     # KungFu
-    num_train_steps = num_train_steps // current_cluster_size()
+    num_train_steps = num_train_steps // 2
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1258,15 +1318,20 @@ def main(_):
     # KungFu
     # add hook so that all nodes the training with equal variables
     # hooks=[BroadcastGlobalVariablesHook(), AdaSGDHook()]
+    hooks=[ElasticHook(num_train_steps)]
     # hooks=[BroadcastGlobalVariablesHook()]
-    # hooks=[BroadcastGlobalVariablesHook(), EarlyStoppingHook()]
-    # hooks=[BroadcastGlobalVariablesHook(), KungFuElasticTrainHook("1:300,2:300,4:6000", num_train_steps, FLAGS.output_dir)]
-    max_steps = 1536
-    hooks=[KungFuElasticTrainHook("1:512,2:512,4:512", max_steps, FLAGS.output_dir)]
-    estimator.train(input_fn=train_input_fn, max_steps=max_steps, hooks=hooks)
-    print("end of training")
-    # KungFu
-    # run_barrier()
+    
+    input_file = "/home/marcel/dataset/squad2/train.tf_record"
+    eval_input_fn = eval_input_fn_builder(
+        input_file=input_file,
+        seq_length=FLAGS.max_seq_length,
+        is_training=True,
+        drop_remainder=True)
+    
+    train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
+    eval_spec = tf.estimator.EvalSpec(input_fn=eval_input_fn, throttle_secs=6)
+    tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
+    
     # log end time
     tf.logging.info("Training end time " + str(datetime.now()))
 
