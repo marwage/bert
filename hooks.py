@@ -1,5 +1,6 @@
 import tensorflow as tf
 import time
+from kungfu import current_cluster_size
 
 
 class AdaSGDHook(tf.train.SessionRunHook):
@@ -60,15 +61,53 @@ class PrintHook(tf.train.SessionRunHook):
       print(var.name)
 
 
-class TimingHook(tf.train.SessionRunHook):
-  def __init__(self):
-    super(TimingHook, self).__init__()
-    
+class ScalingFactorHook(tf.train.SessionRunHook):
+  def __init__(self, batch_size):
+    super(ScalingFactorHook, self).__init__()
+    self.batch_size = batch_size
+    self.time_difference = 0.0
+    self.examples_per_second = dict()
+
   def begin(self):
     self.last_time_stamp = time.time()
 
   def after_run(self, run_context, run_values):
     now = time.time()
-    time_difference = now - self.last_time_stamp
-    print("last iteration in ", time_difference, " seconds")
+    self.time_difference = now - self.last_time_stamp
     self.last_time_stamp = now
+    size = current_cluster_size()
+    self.examples_per_second[size] = (self.batch_size * size) / self.time_difference
+    print("global examples per second ", self.examples_per_second)
+    
+
+class LossDeltaHook(tf.train.SessionRunHook):
+  def __init__(self):
+    super(LossDeltaHook, self).__init__()
+
+  def calc(self):
+    loss_delta = tf.math.subtract(self.loss, self.last_loss)
+    assign_loss_delta = tf.cond(tf.math.equal(self.global_step, 0),
+      lambda: tf.identity(self.loss_delta),
+      lambda: tf.assign(self.loss_delta, loss_delta))
+
+    beta = 0.1
+    ma_loss_delta = tf.math.add(self.ma_loss_delta * (1-beta), beta * self.loss_delta)
+    assign_ma_loss_delta = tf.assign(self.ma_loss_delta, ma_loss_delta)
+
+    with tf.control_dependencies([assign_loss_delta]):
+      with tf.control_dependencies([assign_ma_loss_delta]):
+        return tf.assign(self.last_loss, self.loss)
+    
+  def begin(self):
+    self.loss = tf.get_default_graph().get_tensor_by_name("average_loss:0")
+    self.global_step = tf.train.get_or_create_global_step()
+    self.last_loss = tf.get_variable("last_loss", initializer=0.0)
+    self.ma_loss_delta = tf.get_variable("ma_loss_delta", initializer=0.0)
+    self.loss_delta = tf.get_variable("loss_delta", initializer=0.0)
+    tf.summary.scalar("ma_loss_delta", self.ma_loss_delta)
+    tf.summary.scalar("loss_delta", self.loss_delta)
+
+    self.calc_op = self.calc()
+
+  def after_run(self, run_context, run_values):
+    run_context.session.run(self.calc_op)

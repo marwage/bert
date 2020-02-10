@@ -33,64 +33,7 @@ from kungfu import current_rank, current_cluster_size, run_barrier
 from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
 from datetime import datetime
 from kungfu.tensorflow.hooks import KungFuElasticTrainHook
-
-
-class AdaSGDHook(tf.train.SessionRunHook):
-  def __init__(self):
-    super(AdaSGDHook, self).__init__()
-    self._changed_yet = False
-    self._change_step = 4000
-  
-  def begin(self):
-    from kungfu.tensorflow.ops import broadcast
-    self._ops = [tf.assign(v, broadcast(v)) for v in tf.global_variables()]
-    self._s_sgd = tf.get_default_graph().get_tensor_by_name("s_sgd:0")
-    self._assign_op = tf.assign(self._s_sgd, 1)
-    self._global_step = tf.train.get_or_create_global_step()
-
-  def after_run(self, run_context, run_values):
-    global_step = run_context.session.run(self._global_step)
-    if global_step >= self._change_step and not self._changed_yet:
-        run_context.session.run(self._ops)
-        run_context.session.run(self._assign_op)
-        self._changed_yet = True
-        print("Changed at step ", global_step)
-
-
-class EarlyStoppingHook(tf.train.SessionRunHook):
-  def __init__(self, threshold):
-    super(EarlyStoppingHook, self).__init__()
-    self._loss_threshold = threshold
-    self._twice = False
-    
-  def begin(self):
-    self._loss = tf.get_default_graph().get_tensor_by_name("average_loss:0")
-
-  def after_run(self, run_context, run_values):
-    loss = run_context.session.run(self._loss)
-    print("average_loss:0, %d", loss)
-
-    if loss < self._loss_threshold and self._twice:
-      print("loss below threshold")
-      print("stopping")
-      run_context.request_stop()
-    
-    if loss < self._loss_threshold and not self._twice:
-      self._twice = True
-    else: 
-      self._twice = False
-
-
-class PrintHook(tf.train.SessionRunHook):
-  def __init__(self):
-    super(PrintHook, self).__init__()
-    
-  def begin(self):
-    self._variables = tf.global_variables()
-
-  def after_run(self, run_context, run_values):
-    for var in self._variables:
-      print(var.name)
+from hooks import EarlyStoppingHook, ScalingFactorHook, LossDeltaHook
 
 
 flags = tf.flags
@@ -1305,7 +1248,7 @@ def main(_):
       model_dir=FLAGS.output_dir,
       save_checkpoints_steps=FLAGS.save_checkpoints_steps,
       # KungFu
-      save_summary_steps=None,
+      save_summary_steps=1,
       tpu_config=tf.contrib.tpu.TPUConfig(
           iterations_per_loop=FLAGS.iterations_per_loop,
           num_shards=FLAGS.num_tpu_cores,
@@ -1325,6 +1268,7 @@ def main(_):
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     # KungFu
     # num_train_steps = num_train_steps // current_cluster_size()
+    num_train_steps = 800
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1377,11 +1321,10 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    # hooks=[BroadcastGlobalVariablesHook(), AdaSGDHook()]
-    # max_steps = 12000
-    # hooks=[KungFuElasticTrainHook("4:800,3:1600,2:3200,1:6400", max_steps, FLAGS.output_dir)]
+    # hooks=[BroadcastGlobalVariablesHook(), ScalingFactorHook(FLAGS.train_batch_size), LossDeltaHook()]
+    hooks=[KungFuElasticTrainHook("1:200,2:200,3:200,4:200", num_train_steps, FLAGS.output_dir), ScalingFactorHook(FLAGS.train_batch_size), LossDeltaHook()]
     # hooks=[BroadcastGlobalVariablesHook()]
-    hooks = [EarlyStoppingHook(0.4)]
+    # hooks = [EarlyStoppingHook(0.4), TimingHook()]
     
     input_file = "/home/marcel/dataset/squad2/train.tf_record"
     eval_input_fn = eval_input_fn_builder(
