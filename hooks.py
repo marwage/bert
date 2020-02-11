@@ -76,7 +76,11 @@ class ScalingFactorHook(tf.train.SessionRunHook):
     self.time_difference = now - self.last_time_stamp
     self.last_time_stamp = now
     size = current_cluster_size()
-    self.examples_per_second[size] = (self.batch_size * size) / self.time_difference
+    if size in self.examples_per_second:
+      beta = 0.1
+      self.examples_per_second[size] = (1-beta) * self.examples_per_second[size] + (beta * (self.batch_size * size) / self.time_difference)
+    else:
+      self.examples_per_second[size] = (self.batch_size * size) / self.time_difference
     print("global examples per second ", self.examples_per_second)
     
 
