@@ -27,6 +27,7 @@ class SpotnikCheckpointSaverHook(session_run_hook.SessionRunHook):
   def begin(self):
     self._summary_writer = SummaryWriterCache.get(self._checkpoint_dir)
     self._global_step_tensor = training_util._get_or_create_global_step_read()  # pylint: disable=protected-access
+    self._changed = tf.get_default_graph().get_tensor_by_name("changed:0")
     if self._global_step_tensor is None:
       raise RuntimeError(
           "Global step should be created to use CheckpointSaverHook.")
@@ -48,7 +49,8 @@ class SpotnikCheckpointSaverHook(session_run_hook.SessionRunHook):
 
   def after_run(self, run_context, run_values):
     global_step = run_context.session.run(self._global_step_tensor)
-    if global_step % 10 == 0:
+    changed = run_context.session.run(self._changed)
+    if changed == 1:
       start_time = time.time()
       self._save(run_context.session, global_step)
       save_duration = time.time() - start_time
