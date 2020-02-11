@@ -27,12 +27,10 @@ import modeling
 import optimization
 import tokenization
 import six
-import tensorflow as tf
-from kungfu import current_rank, current_cluster_size, run_barrier
-from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
-from ada_sgd_loss import AdaSGDHook
-from kungfu.tensorflow.hooks import KungFuElasticTrainHook
 from datetime import datetime
+import tensorflow as tf
+from kungfu import current_rank, current_cluster_size
+from spotnik import SpotnikHook
 
 class EarlyStoppingHook(tf.train.SessionRunHook):
   def __init__(self):
@@ -688,17 +686,15 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu, FLAGS.optimizer_threshold)
 
       # KungFu
-      # log global_step
-      global_step = tf.train.get_or_create_global_step()
+      # global_step = tf.train.get_or_create_global_step()
       # logging_hook = tf.train.LoggingTensorHook({"global_step" : global_step, "total_loss": total_loss}, every_n_iter=1)
-      logging_hook = tf.train.LoggingTensorHook({"global_step" : global_step}, every_n_iter=1)
 
       output_spec = tf.contrib.tpu.TPUEstimatorSpec(
           mode=mode,
           loss=total_loss,
           train_op=train_op,
           scaffold_fn=scaffold_fn,
-          training_hooks = [logging_hook])
+          training_hooks = None)
     elif mode == tf.estimator.ModeKeys.PREDICT:
       predictions = {
           "unique_ids": unique_ids,
@@ -1183,9 +1179,10 @@ def main(_):
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
-      save_checkpoints_steps=FLAGS.save_checkpoints_steps,
+      # save_checkpoints_steps=FLAGS.save_checkpoints_steps,
       # KungFu
-      save_summary_steps=20,
+      save_checkpoints_steps=None,
+      save_summary_steps=None,
       tpu_config=tf.contrib.tpu.TPUConfig(
           iterations_per_loop=FLAGS.iterations_per_loop,
           num_shards=FLAGS.num_tpu_cores,
@@ -1204,7 +1201,8 @@ def main(_):
     num_train_steps = int(
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     # KungFu
-    num_train_steps = num_train_steps // current_cluster_size()
+    # num_train_steps = num_train_steps // current_cluster_size()
+    num_train_steps = 800 # SpotnikHook
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1257,16 +1255,10 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    # hooks=[BroadcastGlobalVariablesHook(), AdaSGDHook()]
-    # hooks=[BroadcastGlobalVariablesHook()]
-    # hooks=[BroadcastGlobalVariablesHook(), EarlyStoppingHook()]
-    # hooks=[BroadcastGlobalVariablesHook(), KungFuElasticTrainHook("1:300,2:300,4:6000", num_train_steps, FLAGS.output_dir)]
-    max_steps = 1536
-    hooks=[KungFuElasticTrainHook("1:512,2:512,4:512", max_steps, FLAGS.output_dir)]
-    estimator.train(input_fn=train_input_fn, max_steps=max_steps, hooks=hooks)
-    print("end of training")
+    hooks=[SpotnikHook(FLAGS.output_dir)]
+    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
+    
     # KungFu
-    # run_barrier()
     # log end time
     tf.logging.info("Training end time " + str(datetime.now()))
 

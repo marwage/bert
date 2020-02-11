@@ -32,9 +32,9 @@ import tensorflow as tf
 from kungfu import current_rank, current_cluster_size, run_barrier
 from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
 from datetime import datetime
-from kungfu.tensorflow.hooks import KungFuElasticTrainHook
+from elastic_hook import KungFuElasticTrainHook
 from hooks import EarlyStoppingHook, ScalingFactorHook, LossDeltaHook
-
+from checkpoint_saver_hook import SpotnikCheckpointSaverHook
 
 flags = tf.flags
 
@@ -1246,9 +1246,10 @@ def main(_):
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
+      save_checkpoints_secs=None,
       save_checkpoints_steps=FLAGS.save_checkpoints_steps,
       # KungFu
-      save_summary_steps=1,
+      save_summary_steps=100,
       tpu_config=tf.contrib.tpu.TPUConfig(
           iterations_per_loop=FLAGS.iterations_per_loop,
           num_shards=FLAGS.num_tpu_cores,
@@ -1321,10 +1322,7 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    # hooks=[BroadcastGlobalVariablesHook(), ScalingFactorHook(FLAGS.train_batch_size), LossDeltaHook()]
-    hooks=[KungFuElasticTrainHook("1:200,2:200,3:200,4:200", num_train_steps, FLAGS.output_dir), ScalingFactorHook(FLAGS.train_batch_size), LossDeltaHook()]
-    # hooks=[BroadcastGlobalVariablesHook()]
-    # hooks = [EarlyStoppingHook(0.4), TimingHook()]
+    hooks=[BroadcastGlobalVariablesHook()]
     
     input_file = "/home/marcel/dataset/squad2/train.tf_record"
     eval_input_fn = eval_input_fn_builder(
