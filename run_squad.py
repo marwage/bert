@@ -31,19 +31,21 @@ from datetime import datetime
 import tensorflow as tf
 from kungfu import current_rank, current_cluster_size
 from spotnik import SpotnikHook
+from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
 
-class EarlyStoppingHook(tf.train.SessionRunHook):
+
+class StoppingHook(tf.train.SessionRunHook):
   def __init__(self):
-    super(EarlyStoppingHook, self).__init__()
-    self._loss_threshold = 0.3
+    self._stop_step = 512
     
   def begin(self):
-    self._loss = tf.get_default_graph().get_tensor_by_name("average_loss:0")
+    self._global_step = tf.train.get_or_create_global_step()
 
   def after_run(self, run_context, run_values):
-    loss = run_context.session.run(self._loss)
-    if loss < self._loss_threshold:
+    global_step = run_context.session.run(self._global_step)
+    if global_step >= self._stop_step:
       run_context.request_stop()
+
 
 flags = tf.flags
 
@@ -636,6 +638,9 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
         use_one_hot_embeddings=use_one_hot_embeddings)
 
     tvars = tf.trainable_variables()
+    # Marcel
+    # tvars.append(tf.train.get_or_create_global_step())
+    # tvars = tf.global_variables()
 
     initialized_variable_names = {}
     scaffold_fn = None
@@ -685,16 +690,16 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu, FLAGS.optimizer_threshold)
 
-      # KungFu
-      # global_step = tf.train.get_or_create_global_step()
-      # logging_hook = tf.train.LoggingTensorHook({"global_step" : global_step, "total_loss": total_loss}, every_n_iter=1)
+      # Marcel
+      global_step = tf.train.get_or_create_global_step()
+      logging_hook = tf.train.LoggingTensorHook({"global_step" : global_step}, every_n_iter=50)
 
       output_spec = tf.contrib.tpu.TPUEstimatorSpec(
           mode=mode,
           loss=total_loss,
           train_op=train_op,
           scaffold_fn=scaffold_fn,
-          training_hooks = None)
+          training_hooks = [logging_hook])
     elif mode == tf.estimator.ModeKeys.PREDICT:
       predictions = {
           "unique_ids": unique_ids,
@@ -751,7 +756,7 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
       d = d.repeat()
       # KungFu
       # use current_rank as seed
-      d = d.shuffle(buffer_size=100, seed=current_rank())
+      d = d.shuffle(buffer_size=300000, seed=current_rank())
 
     d = d.apply(
         tf.contrib.data.map_and_batch(
@@ -1180,9 +1185,9 @@ def main(_):
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
       # save_checkpoints_steps=FLAGS.save_checkpoints_steps,
-      # KungFu
-      save_checkpoints_steps=None,
-      save_summary_steps=None,
+      # Marcel
+      save_checkpoints_steps=50,
+      save_summary_steps=10,
       tpu_config=tf.contrib.tpu.TPUConfig(
           iterations_per_loop=FLAGS.iterations_per_loop,
           num_shards=FLAGS.num_tpu_cores,
@@ -1192,7 +1197,7 @@ def main(_):
   num_train_steps = None
   num_warmup_steps = None
   if FLAGS.do_train:
-    # KungFu
+    # Marcel
     # log start time
     tf.logging.info("Training start time " + str(datetime.now()))
 
@@ -1202,7 +1207,7 @@ def main(_):
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     # KungFu
     # num_train_steps = num_train_steps // current_cluster_size()
-    num_train_steps = 800 # SpotnikHook
+    num_train_steps = 1024 # Marcel
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1255,7 +1260,10 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    hooks=[SpotnikHook(FLAGS.output_dir)]
+    # hooks = [SpotnikHook(FLAGS.output_dir, FLAGS.train_batch_size), BroadcastGlobalVariablesHook()]
+    hooks = [BroadcastGlobalVariablesHook()]
+    # hooks = [StoppingHook()]
+
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     
     # KungFu
