@@ -14,6 +14,7 @@ from tensorflow.core.util.event_pb2 import SessionLog
 from kungfu import current_cluster_size
 from kungfu.tensorflow.initializer import BroadcastGlobalVariablesOp
 from kungfu.tensorflow.ops import _get_init_step, counter, resize_cluster, step_based_schedule
+from kungfu.tensorflow.ops import consensus
 
 
 class CheckpointSaverHook():
@@ -162,13 +163,24 @@ class ScalingFactorHook():
         self.time_difference = now - self.last_time_stamp
         self.last_time_stamp = now
         size = current_cluster_size()
-        if size in self.examples_per_second:
-            beta = 0.1
-            self.examples_per_second[size] = (1-beta) * self.examples_per_second[size] + (beta * (self.batch_size * size) / self.time_difference)
+        size_str = str(size)
+        if size_str in self.examples_per_second:
+            self.examples_per_second[size_str]["steps"] = self.examples_per_second[size_str]["steps"] + 1
         else:
-            self.examples_per_second[size] = (self.batch_size * size) / self.time_difference
+            self.examples_per_second[size_str] = dict()
+            self.examples_per_second[size_str]["steps"] = 1
+            self.examples_per_second[size_str]["throughputs"] = []
+        self.examples_per_second[size_str]["throughputs"].append((self.batch_size * size) / self.time_difference)
         print("global examples per second ", self.examples_per_second)
-        
+
+    def end(self, session):
+        for siz in self.examples_per_second:
+            sum = 0
+            for ele in self.examples_per_second[siz]["throughputs"]:
+                sum = sum + ele
+            avg = sum / self.examples_per_second[siz]["steps"]
+            print("size ", siz, " has average throughput of ", avg)
+
 
 class LossDeltaHook():
     def calc(self):
@@ -261,28 +273,51 @@ class ElasticHook():
               (global_step, kungfu_step))
 
 
-class SpotnikHook(tf.train.SessionRunHook):
-    def __init__(self, checkpoint_dir):
-        schedule = "1:200,2:200,3:200,4:200"
-        max_step = 800
-        self._elastic_hook = ElasticHook(schedule, max_step)
-        self._checkpoint_hook = CheckpointSaverHook(checkpoint_dir)
-
-    def after_create_session(self, session, coord):
-        self._elastic_hook.after_create_session(session, coord)
-        self._checkpoint_hook.after_create_session(session, coord)
+class ConsensusHook():
+    def begin(self):
+        self._consensus_op = [consensus(var) for var in tf.global_variables()]
 
     def after_run(self, run_context, run_values):
-        if self._elastic_hook.after_run(run_context, run_values):
-            self._checkpoint_hook.after_run(run_context, run_values)
+        consensus_checks = run_context.session.run(self._consensus_op)
+        for check in consensus_checks:
+            if not check:
+                print("DIFF")
+
+
+class SpotnikHook(tf.train.SessionRunHook):
+    def __init__(self, checkpoint_dir, batch_size):
+        schedule = "1:20,2:20,4:20"
+        max_step = 60
+        self._elastic_hook = ElasticHook(schedule, max_step)
+        self._checkpoint_hook = CheckpointSaverHook(checkpoint_dir)
+        self._consensus_hook = ConsensusHook()
+        self._scaling_hook = ScalingFactorHook(batch_size)
+
+    def after_create_session(self, session, coord):
+        pass
+        # self._elastic_hook.after_create_session(session, coord)
+        # self._checkpoint_hook.after_create_session(session, coord)
+
+    def after_run(self, run_context, run_values):
+        pass
+        # if self._elastic_hook.after_run(run_context, run_values):
+        #     self._checkpoint_hook.after_run(run_context, run_values)
+        # self._consensus_hook.after_run(run_context, run_values)
+        # self._scaling_hook.after_run(run_context, run_values)
 
     def before_run(self, run_context):
-        self._elastic_hook.before_run(run_context)
+        pass
+        # self._elastic_hook.before_run(run_context)
 
     def begin(self):
-        self._elastic_hook.begin()
-        self._checkpoint_hook.begin()
+        pass
+        # self._elastic_hook.begin()
+        # self._checkpoint_hook.begin()
+        # self._consensus_hook.begin()
+        # self._scaling_hook.begin()
 
     def end(self, session):
-        self._elastic_hook.end(session)
-        self._checkpoint_hook.end(session)
+        pass
+        # self._elastic_hook.end(session)
+        # self._checkpoint_hook.end(session)
+        # self._scaling_hook.end(session)
