@@ -1262,9 +1262,6 @@ def main(_):
         input_file=FLAGS.train_file, is_training=True)
     num_train_steps = int(
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
-    # KungFu
-    # define how many steps the system should run
-    num_train_steps = num_train_steps // 4
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1301,6 +1298,8 @@ def main(_):
     #     output_fn=train_writer.process_feature)
     # train_writer.close()
 
+    num_train_examples = len(train_examples)
+
     tf.logging.info("***** Running training *****")
     tf.logging.info("  Num orig examples = %d", len(train_examples))
     # tf.logging.info("  Num split examples = %d", train_writer.num_features)
@@ -1317,7 +1316,7 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    hooks=[ElasticHook(num_train_steps)]
+    hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples)]
     
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     

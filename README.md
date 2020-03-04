@@ -1,5 +1,9 @@
 # BERT x KungFu
 
+## Prerequisite
+Install KungFu
+https://github.com/lsds/KungFu
+
 ## Run elastic training
 1. start config server `zsh peerlist-server.sh`
 2. start config client to set peerlist `zsh peerlist-client`
