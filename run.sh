@@ -14,7 +14,7 @@ $KUNGFU_RUN \
     -np 4 \
     -logfile kungfu-run.log \
     -logdir $OUTPUT_DIR \
-    python3 bert_kf/run_squad_elastic.py \
+    python3 run_squad_elastic.py \
 		--vocab_file=$BERT_BASE_DIR/vocab.txt \
 		--bert_config_file=$BERT_BASE_DIR/bert_config.json \
 		--init_checkpoint=$BERT_BASE_DIR/bert_model.ckpt \
