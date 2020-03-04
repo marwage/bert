@@ -24,7 +24,7 @@ import math
 import os
 import random
 import modeling
-import optimization_adaptive as optimization
+import optimization
 import tokenization
 import six
 import tensorflow as tf
