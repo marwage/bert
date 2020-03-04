@@ -30,7 +30,6 @@ import six
 from datetime import datetime
 import tensorflow as tf
 from kungfu import current_rank, current_cluster_size
-from spotnik import SpotnikHook
 from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
 
 
@@ -754,9 +753,7 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
     d = tf.data.TFRecordDataset(input_file)
     if is_training:
       d = d.repeat()
-      # KungFu
-      # use current_rank as seed
-      d = d.shuffle(buffer_size=300000, seed=current_rank())
+      d = d.shuffle(buffer_size=300000)
 
     d = d.apply(
         tf.contrib.data.map_and_batch(
@@ -1184,9 +1181,8 @@ def main(_):
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
-      # save_checkpoints_steps=FLAGS.save_checkpoints_steps,
-      # Marcel
-      save_checkpoints_steps=50,
+      save_checkpoints_steps=FLAGS.save_checkpoints_steps,
+      # KungFu
       save_summary_steps=10,
       tpu_config=tf.contrib.tpu.TPUConfig(
           iterations_per_loop=FLAGS.iterations_per_loop,
@@ -1206,8 +1202,7 @@ def main(_):
     num_train_steps = int(
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     # KungFu
-    # num_train_steps = num_train_steps // current_cluster_size()
-    num_train_steps = 1024 # Marcel
+    num_train_steps = num_train_steps // current_cluster_size()
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1260,9 +1255,7 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    # hooks = [SpotnikHook(FLAGS.output_dir, FLAGS.train_batch_size), BroadcastGlobalVariablesHook()]
     hooks = [BroadcastGlobalVariablesHook()]
-    # hooks = [StoppingHook()]
 
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     

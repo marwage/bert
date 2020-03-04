@@ -65,20 +65,6 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
       beta_2=0.999,
       epsilon=1e-6,
       exclude_from_weight_decay=["LayerNorm", "layer_norm", "bias"])
-
-  # KungFu
-  # loss_threshold = -1.0
-  # tf.logging.info("Loss threshold = %f", loss_threshold)
-  # tf.logging.info("Optimizer = %s", "AdaptiveSGDLossOptimizer")
-  # optimizer = AdaptiveSGDLossOptimizer(optimizer, loss, loss_threshold)
-  # noise_threshold = 1000.0
-  # tf.logging.info("Noise threshold = %f", noise_threshold)
-  # tf.logging.info("Optimizer = %s", "AdaptiveSGDNoiseOptimizer")
-  # optimizer = AdaptiveSGDNoiseOptimizer(optimizer, noise_threshold)
-  # loss_grad_threshold = 0.1
-  # tf.logging.info("Loss grad threshold = %f", loss_grad_threshold)
-  # tf.logging.info("Optimizer = %s", "AdaptiveSGDLossGradOptimizer")
-  # optimizer = AdaptiveSGDLossGradOptimizer(optimizer, loss, loss_grad_threshold)
   
   if use_tpu:
     optimizer = tf.contrib.tpu.CrossShardOptimizer(optimizer)
@@ -88,7 +74,6 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
 
   # KungFu
   # add averaging over all gradient
-  s_sgd = tf.get_variable("s_sgd", initializer=0)
   _, num_workers = peer_info()
   np = tf.cast(num_workers, tf.float32)
 
@@ -110,11 +95,8 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
     with tf.control_dependencies(assign_ops):
       return optimizer.apply_gradients(
           zip(grads, tvars), global_step=global_step)
-
-  # train_op = tf.cond(tf.math.equal(s_sgd, 0),
-  #     lambda: s_sgd_fn(optimizer, tvars, grads, np),
-  #     lambda: sma_fn(optimizer, tvars, grads, np))
-  train_op = tf.cond(tf.math.equal(s_sgd, 0),
+  
+  train_op = tf.cond(tf.math.less_equal(np, 2),
       lambda: s_sgd_fn(optimizer, tvars, grads, np),
       lambda: sma_fn(optimizer, tvars, grads, np))
 

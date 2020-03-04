@@ -1,5 +1,6 @@
 import os
 import time
+import re
 
 import numpy as np
 
@@ -13,8 +14,8 @@ from tensorflow.core.util.event_pb2 import SessionLog
 
 from kungfu import current_cluster_size
 from kungfu.tensorflow.initializer import BroadcastGlobalVariablesOp
-from kungfu.tensorflow.ops import _get_init_step, counter, resize_cluster, step_based_schedule
 from kungfu.tensorflow.ops import consensus
+from kungfu.tensorflow.experimental.hook import ElasticHook
 
 
 class CheckpointSaverHook():
@@ -212,67 +213,6 @@ class LossDeltaHook():
         run_context.session.run(self.calc_op)
 
 
-class ElasticHook():
-    def __init__(self, schedule, max_step):
-        self._schedule = schedule
-        self._max_step = max_step
-        self._need_sync = True
-
-    def _build_resize_op(self, config, init_step):
-        step = counter(init_step)
-        new_size = step_based_schedule(config, step)
-        ckpt_tensor = tf.as_string(step + 1)
-        resize_op = resize_cluster(ckpt_tensor, new_size)
-        return resize_op
-
-    def begin(self):
-        self._kungfu_step = tf.Variable(0, trainable=False, dtype=tf.int64)
-        self._advance = tf.assign_add(self._kungfu_step, 1)
-        self._sync_op = BroadcastGlobalVariablesOp()
-        ckpt = _get_init_step()
-        self._init_kungfu_step = tf.assign(self._kungfu_step, int(ckpt))
-        self._resize_op = self._build_resize_op(self._schedule, int(ckpt))
-        self._reset_global_step = tf.assign(tf.train.get_global_step(),
-                                            int(ckpt))
-
-    def after_create_session(self, sess, coord):
-        sess.run(self._init_kungfu_step)
-        sess.run(self._reset_global_step)
-
-    def before_run(self, run_context):
-        kungfu_step = run_context.session.run(self._kungfu_step)
-        if kungfu_step >= self._max_step:
-            print('request_stop before kungfu_step: %d' % (kungfu_step))
-            # run_context.request_stop()
-            # FIXME: force quit
-
-        if self._need_sync:
-            run_context.session.run(self._sync_op)
-            self._need_sync = False
-
-    def after_run(self, run_context, run_values):
-        kungfu_step = run_context.session.run(self._kungfu_step)
-        changed, keep = run_context.session.run(self._resize_op)
-        if changed:
-            print('changed on %d' % (kungfu_step))
-            self._need_sync = True
-            if not keep:
-                run_context.request_stop()
-                return changed
-
-        kungfu_step = run_context.session.run(self._advance)
-        if kungfu_step >= self._max_step:
-            print('request_stop on kungfu_step: %d' % (kungfu_step))
-            run_context.request_stop()
-        return changed
-
-    def end(self, sess):
-        global_step = sess.run(tf.train.get_global_step())
-        kungfu_step = sess.run(self._kungfu_step)
-        print('stopped at global_step: %d, kungfu_step: %d' %
-              (global_step, kungfu_step))
-
-
 class ConsensusHook():
     def begin(self):
         self._consensus_op = [consensus(var) for var in tf.global_variables()]
@@ -284,40 +224,59 @@ class ConsensusHook():
                 print("DIFF")
 
 
+class CheckpointAndRestoreHook():
+    def __init__(self):
+        self._checkpoints = dict()
+        self._checkpoint_placeholers = []
+        self._restore_checkpoint = False
+        self._branch = 0
+
+        # intermediately
+        self._checkpoint_key = (0,0)
+
+    def begin(self):
+        self._global_variables = tf.global_variables()
+        for var in self._global_variables:
+            m = re.match("^.+?(?=:0)", var.name)
+            var_name = m.group(0)
+            var_name = var_name + "_ckpt"
+            self._checkpoint_placeholers.append(tf.placeholder(var.dtype, shape=var.shape, name=var_name))
+        self._restore_op = [tf.assign(var, ckpt) for var, ckpt in zip(self._global_variables, self._checkpoint_placeholers)]
+
+    def after_run(self, run_context, run_values):
+        global_step = run_context.session.run(tf.train.get_or_create_global_step())
+        self._checkpoints[(global_step, self._branch)] = run_context.session.run(self._global_variables)
+        print("checkpoint at ", global_step)
+        self._checkpoint_key = (global_step, self._branch)
+
+    def before_run(self, run_context):
+        global_step = run_context.session.run(tf.train.get_or_create_global_step())
+        print("global_step ", global_step)
+        if global_step == 310:
+            self._restore_checkpoint = True
+        else:
+            self._restore_checkpoint = False
+        if self._restore_checkpoint:
+            run_context.session.run(self._restore_op, feed_dict={ckpt_pl.name: ckpt for ckpt_pl, ckpt in zip(self._checkpoint_placeholers, self._checkpoints[self._checkpoint_key])})
+            self._branch = self._branch + 1
+            print("restored checkpoint at ", global_step)
+
+
 class SpotnikHook(tf.train.SessionRunHook):
-    def __init__(self, checkpoint_dir, batch_size):
-        schedule = "1:20,2:20,4:20"
-        max_step = 60
-        self._elastic_hook = ElasticHook(schedule, max_step)
-        self._checkpoint_hook = CheckpointSaverHook(checkpoint_dir)
-        self._consensus_hook = ConsensusHook()
-        self._scaling_hook = ScalingFactorHook(batch_size)
+    def __init__(self, num_train_steps):
+        pass
 
     def after_create_session(self, session, coord):
         pass
-        # self._elastic_hook.after_create_session(session, coord)
-        # self._checkpoint_hook.after_create_session(session, coord)
 
     def after_run(self, run_context, run_values):
         pass
-        # if self._elastic_hook.after_run(run_context, run_values):
-        #     self._checkpoint_hook.after_run(run_context, run_values)
-        # self._consensus_hook.after_run(run_context, run_values)
-        # self._scaling_hook.after_run(run_context, run_values)
 
     def before_run(self, run_context):
         pass
-        # self._elastic_hook.before_run(run_context)
 
     def begin(self):
         pass
-        # self._elastic_hook.begin()
-        # self._checkpoint_hook.begin()
-        # self._consensus_hook.begin()
-        # self._scaling_hook.begin()
 
     def end(self, session):
         pass
-        # self._elastic_hook.end(session)
-        # self._checkpoint_hook.end(session)
-        # self._scaling_hook.end(session)

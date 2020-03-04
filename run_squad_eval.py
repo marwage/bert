@@ -24,17 +24,14 @@ import math
 import os
 import random
 import modeling
-# import optimization_adaptive as optimization
 import optimization
 import tokenization
 import six
 import tensorflow as tf
-from kungfu import current_rank, current_cluster_size, run_barrier
+from kungfu import current_rank, current_cluster_size
 from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
 from datetime import datetime
-from elastic_hook import KungFuElasticTrainHook
-from hooks import EarlyStoppingHook, ScalingFactorHook, LossDeltaHook
-from checkpoint_saver_hook import SpotnikCheckpointSaverHook
+
 
 flags = tf.flags
 
@@ -766,10 +763,8 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
     # For eval, we want no shuffling and parallel reading doesn't matter.
     d = tf.data.TFRecordDataset(input_file)
     if is_training:
-      # d = d.shuffle(buffer_size=100, seed=current_rank())
-      d = d.shard(current_cluster_size(), current_rank())
-      # d = d.repeat(int(FLAGS.num_train_epochs))
       d = d.repeat()
+      d = d.shuffle(buffer_size=300000)
 
     d = d.apply(
         tf.contrib.data.map_and_batch(
@@ -1246,7 +1241,6 @@ def main(_):
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
-      save_checkpoints_secs=None,
       save_checkpoints_steps=FLAGS.save_checkpoints_steps,
       # KungFu
       save_summary_steps=100,
@@ -1336,7 +1330,6 @@ def main(_):
     tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
 
     # KungFu
-    # run_barrier()
     # log end time
     tf.logging.info("Training end time " + str(datetime.now()))
 

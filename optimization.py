@@ -69,20 +69,6 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
       beta_2=0.999,
       epsilon=1e-6,
       exclude_from_weight_decay=["LayerNorm", "layer_norm", "bias"])
-
-  # KungFu
-  # loss_threshold = -1.0
-  # tf.logging.info("Loss threshold = %f", loss_threshold)
-  # tf.logging.info("Optimizer = %s", "AdaptiveSGDLossOptimizer")
-  # optimizer = AdaptiveSGDLossOptimizer(optimizer, loss, loss_threshold)
-  # noise_threshold = 1000.0
-  # tf.logging.info("Noise threshold = %f", noise_threshold)
-  # tf.logging.info("Optimizer = %s", "AdaptiveSGDNoiseOptimizer")
-  # optimizer = AdaptiveSGDNoiseOptimizer(optimizer, noise_threshold)
-  # loss_grad_threshold = 0.1
-  # tf.logging.info("Loss grad threshold = %f", loss_grad_threshold)
-  # tf.logging.info("Optimizer = %s", "AdaptiveSGDLossGradOptimizer")
-  # optimizer = AdaptiveSGDLossGradOptimizer(optimizer, loss, loss_grad_threshold)
   
   if use_tpu:
     optimizer = tf.contrib.tpu.CrossShardOptimizer(optimizer)

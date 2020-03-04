@@ -24,14 +24,11 @@ import math
 import os
 import random
 import modeling
-import optimization
+import optimization_adaptive as optimization
 import tokenization
 import six
 import tensorflow as tf
-from kungfu import run_barrier
-from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
 from kungfu.tensorflow.experimental.hook import ElasticHook
-from ada_sgd_loss import AdaSGDHook
 from datetime import datetime
 
 
@@ -765,8 +762,8 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
     # For eval, we want no shuffling and parallel reading doesn't matter.
     d = tf.data.TFRecordDataset(input_file)
     if is_training:
-      d = d.shuffle(buffer_size=100)
       d = d.repeat()
+      d = d.shuffle(buffer_size=300000)
 
     d = d.apply(
         tf.contrib.data.map_and_batch(
@@ -1226,7 +1223,9 @@ def main(_):
 
   # KungFu
   # use individual output_dir for each process
-  FLAGS.output_dir = os.path.join(FLAGS.output_dir, os.getenv("KUNGFU_SELF_SPEC"))
+  kungfu_spec = os.getenv("KUNGFU_SELF_SPEC")
+  kungfu_spec = kungfu_spec.replace(":", "-")
+  FLAGS.output_dir = os.path.join(FLAGS.output_dir, kungfu_spec)
 
   tf.gfile.MakeDirs(FLAGS.output_dir)
 
@@ -1243,7 +1242,7 @@ def main(_):
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
-      save_checkpoints_steps=FLAGS.save_checkpoints_steps,
+      # save_checkpoints_steps=FLAGS.save_checkpoints_steps,
       # KungFu
       save_summary_steps=20,
       tpu_config=tf.contrib.tpu.TPUConfig(
@@ -1264,7 +1263,8 @@ def main(_):
     num_train_steps = int(
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
     # KungFu
-    num_train_steps = num_train_steps // 2
+    # define how many steps the system should run
+    num_train_steps = num_train_steps // 4
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1317,20 +1317,9 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    # hooks=[BroadcastGlobalVariablesHook(), AdaSGDHook()]
     hooks=[ElasticHook(num_train_steps)]
-    # hooks=[BroadcastGlobalVariablesHook()]
     
-    input_file = "/home/marcel/dataset/squad2/train.tf_record"
-    eval_input_fn = eval_input_fn_builder(
-        input_file=input_file,
-        seq_length=FLAGS.max_seq_length,
-        is_training=True,
-        drop_remainder=True)
-    
-    train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
-    eval_spec = tf.estimator.EvalSpec(input_fn=eval_input_fn, throttle_secs=6)
-    tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
+    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     
     # log end time
     tf.logging.info("Training end time " + str(datetime.now()))
