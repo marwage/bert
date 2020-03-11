@@ -11,7 +11,8 @@ https://github.com/lsds/KungFu
 4. start training `zsh run_elastic_server.sh`
 
 ## Run elastic training with schedule
-1. start training `zsh run_elastic_schedule.sh`
+1. install KungFu on branch `mw-schedule`
+2. start training `zsh run_elastic_schedule.sh`
 
 ## Run static training
 1. start training `zsh run_static.sh`
