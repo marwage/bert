@@ -3,7 +3,7 @@
 export KUNGFU_CONFIG_LOG_LEVEL=INFO # DEBUG # or INFO | WARN | ERROR
 
 KUNGFU_RUN=$HOME/KungFu/bin/kungfu-run
-BERT_BASE_DIR=uncased_L-12_H-768_A-12
+BERT_BASE_DIR=$HOME/bert/uncased_L-12_H-768_A-12
 SQUAD_DIR=$HOME/dataset/squad2
 OUTPUT_DIR=tmp
 
@@ -14,7 +14,7 @@ $KUNGFU_RUN \
     -np 4 \
     -logfile kungfu-run.log \
     -logdir $OUTPUT_DIR \
-    python3 bert_kf/run_squad_elastic.py \
+    python3 run_squad_elastic_server.py \
 		--vocab_file=$BERT_BASE_DIR/vocab.txt \
 		--bert_config_file=$BERT_BASE_DIR/bert_config.json \
 		--init_checkpoint=$BERT_BASE_DIR/bert_model.ckpt \
@@ -24,7 +24,6 @@ $KUNGFU_RUN \
 		--predict_file=$SQUAD_DIR/dev-v2.0.json \
 		--train_batch_size=8 \
 		--learning_rate=3e-5 \
-		--num_train_epochs=1 \
 		--max_seq_length=384 \
 		--doc_stride=128 \
 		--output_dir=$OUTPUT_DIR \
