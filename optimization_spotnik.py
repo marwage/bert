@@ -21,7 +21,7 @@ from __future__ import print_function
 import re
 import tensorflow as tf
 from kungfu._utils import map_maybe
-from kungfu.tensorflow.ops import (spotnik_group_all_reduce, peer_info)
+from kungfu.tensorflow.ops import (spotnik_group_all_reduce, peer_info, spotnik_request_variable_with_template)
 
 
 def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, threshold):
@@ -74,31 +74,57 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
 
   # KungFu
   # add averaging over all gradient
-  _, num_workers = peer_info()
+  rank, num_workers = peer_info()
   np = tf.cast(num_workers, tf.float32)
 
-  def s_sgd_fn(optimizer, vars, grads, num_workers):
-    summed_grads, _ = spotnik_group_all_reduce(grads)
+  def s_sgd_fn(optimizer, variables, grads, num_workers):
+    summed_grads, num_unsucceeded = spotnik_group_all_reduce(grads)
     grads = map_maybe(lambda g: g / num_workers, summed_grads)
     (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
-    return optimizer.apply_gradients(
-        zip(grads, tvars), global_step=global_step)
+    return tf.cond(tf.math.greater(num_unsucceeded, 0),
+      lambda: tf.no_op(),
+      lambda: optimizer.apply_gradients(
+        zip(grads, variables), global_step=global_step))
 
-  def sma_fn(optimizer, vars, grads, num_workers, alpha=0.1):
-    summed_vars, num_unsucceeded = spotnik_group_all_reduce(vars)
-    averaged_vars = [g / num_workers for g in summed_vars]
+  def sma_fn(optimizer, variables, grads, num_workers, alpha=0.1):
+    summed_vars, num_unsucceeded = spotnik_group_all_reduce(variables)
+    averaged_vars = [v / num_workers for v in summed_vars]
     assign_ops = [
       tf.assign(v, (1 - alpha) * v + alpha * avg_v)
-      for v, avg_v in zip(vars, averaged_vars)
+      for v, avg_v in zip(variables, averaged_vars)
     ]
     (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
     with tf.control_dependencies(assign_ops):
-      return optimizer.apply_gradients(
-          zip(grads, tvars), global_step=global_step)
+      return tf.cond(tf.math.greater(num_unsucceeded, 0),
+      lambda: tf.no_op(),
+      lambda: optimizer.apply_gradients(
+          zip(grads, variables), global_step=global_step))
+
+  def get_random_peer(cluster_size, self_rank):
+    t = tf.random.uniform([], minval=0, maxval=cluster_size, dtype=tf.int32)
+    return tf.cond(tf.equal(t, self_rank),
+      lambda: tf.math.floormod(t + 1, cluster_size),
+      lambda: tf.identity(t))
+
+  def pair_fn(optimizer, variables, grads, num_workers, rank):
+    target = get_random_peer(num_workers, rank)
+    other_peer = [spotnik_request_variable_with_template(target, v) for v in variables]
+    other_peer_vars = [t[0] if t is not None else None for t in other_peer]
+    not_succeeded = [t[1] for t in other_peer if t is not None]
+    num_not_succeeded = tf.add_n(not_succeeded)
+    assign_ops = [
+        tf.assign(v, 0.5 * (v + other_v))
+        for v, other_v in zip(variables, other_peer_vars)
+    ]
+
+    with tf.control_dependencies(assign_ops):
+      return tf.cond(tf.math.greater(num_not_succeeded, 0),
+      lambda: tf.no_op(),
+      lambda: optimizer.apply_gradients(zip(grads, variables), global_step=global_step))
   
-  train_op = tf.cond(tf.math.less_equal(np, 2),
-      lambda: s_sgd_fn(optimizer, tvars, grads, np),
-      lambda: sma_fn(optimizer, tvars, grads, np))
+  train_op = tf.case([(tf.math.less_equal(np, 2), lambda: s_sgd_fn(optimizer, tvars, grads, np)),
+    (tf.math.less_equal(np, 8), lambda: sma_fn(optimizer, tvars, grads, np))],
+          default=lambda: pair_fn(optimizer, tvars, grads, num_workers, rank), exclusive=True)
 
   # Normally the global step update is done inside of `apply_gradients`.
   # However, `AdamWeightDecayOptimizer` doesn't do this. But if you use
