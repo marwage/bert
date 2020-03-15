@@ -30,6 +30,7 @@ import six
 import tensorflow as tf
 from kungfu.tensorflow.experimental.hook import ElasticHook
 from datetime import datetime
+from early_stopping import EarlyStoppingHook
 
 
 flags = tf.flags
@@ -1298,6 +1299,7 @@ def main(_):
     #     output_fn=train_writer.process_feature)
     # train_writer.close()
 
+    # KungFu
     num_train_examples = len(train_examples)
 
     tf.logging.info("***** Running training *****")
@@ -1316,7 +1318,8 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples)]
+    hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples), EarlyStoppingHook(1.0)]
+    # hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples)]
     
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     

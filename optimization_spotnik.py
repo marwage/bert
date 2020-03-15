@@ -21,7 +21,7 @@ from __future__ import print_function
 import re
 import tensorflow as tf
 from kungfu._utils import map_maybe
-from kungfu.tensorflow.ops import (spotnik_group_all_reduce, peer_info, spotnik_request_variable_with_template)
+from kungfu.tensorflow.ops import (group_all_reduce, spotnik_group_all_reduce, spotnik_all_reduce, peer_info, spotnik_request_variable_with_template, request_variable_with_template)
 
 
 def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, threshold):
@@ -72,6 +72,17 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
   tvars = tf.trainable_variables()
   grads = tf.gradients(loss, tvars)
 
+  # calculate Exponential moving average
+  def exponential_moving_average_loss_fn(loss, alpha = 0.1):
+    exponential_moving_average_loss = tf.Variable(8.0, name="exponential_moving_average_loss")
+    sum_loss, succeeded = spotnik_all_reduce(loss)
+    avg_loss = tf.math.divide(sum_loss, np)
+    assign_op = tf.assign(exponential_moving_average_loss, alpha * avg_loss + (1-alpha) * exponential_moving_average_loss)
+    tf.summary.scalar("exponential_moving_average_loss", exponential_moving_average_loss)
+    return tf.cond(tf.math.equal(succeeded, 0),
+      lambda: assign_op,
+      lambda: tf.identity(exponential_moving_average_loss))
+
   # KungFu
   # add averaging over all gradient
   rank, num_workers = peer_info()
@@ -85,6 +96,13 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
       lambda: tf.no_op(),
       lambda: optimizer.apply_gradients(
         zip(grads, variables), global_step=global_step))
+
+  def vanilla_s_sgd_fn(optimizer, vars, grads, num_workers):
+    summed_grads = group_all_reduce(grads)
+    grads = map_maybe(lambda g: g / num_workers, summed_grads)
+    (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
+    return optimizer.apply_gradients(
+        zip(grads, tvars), global_step=global_step)
 
   def sma_fn(optimizer, variables, grads, num_workers, alpha=0.1):
     summed_vars, num_unsucceeded = spotnik_group_all_reduce(variables)
@@ -119,12 +137,25 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
 
     with tf.control_dependencies(assign_ops):
       return tf.cond(tf.math.greater(num_not_succeeded, 0),
-      lambda: tf.no_op(),
-      lambda: optimizer.apply_gradients(zip(grads, variables), global_step=global_step))
+        lambda: tf.no_op(),
+        lambda: optimizer.apply_gradients(zip(grads, variables), global_step=global_step))
+
+  def vanilla_pair_fn(optimizer, variables, grads, num_workers, rank):
+    target = get_random_peer(num_workers, rank)
+    other_peer = [request_variable_with_template(target, v) for v in variables]
+    assign_ops = [
+        tf.assign(v, 0.5 * (v + other_v))
+        for v, other_v in zip(variables, other_peer)
+    ]
+
+    with tf.control_dependencies(assign_ops):
+      return optimizer.apply_gradients(zip(grads, variables), global_step=global_step)
   
-  train_op = tf.case([(tf.math.less_equal(np, 2), lambda: s_sgd_fn(optimizer, tvars, grads, np)),
-    (tf.math.less_equal(np, 8), lambda: sma_fn(optimizer, tvars, grads, np))],
-          default=lambda: pair_fn(optimizer, tvars, grads, num_workers, rank), exclusive=True)
+  # train_op = tf.case([(tf.math.less_equal(np, 2), lambda: s_sgd_fn(optimizer, tvars, grads, np)),
+  #   (tf.math.less_equal(np, 8), lambda: sma_fn(optimizer, tvars, grads, np))],
+  #         default=lambda: pair_fn(optimizer, tvars, grads, num_workers, rank), exclusive=True)
+  with tf.control_dependencies([exponential_moving_average_loss_fn(loss)]):
+    train_op = pair_fn(optimizer, tvars, grads, num_workers, rank)
 
   # Normally the global step update is done inside of `apply_gradients`.
   # However, `AdamWeightDecayOptimizer` doesn't do this. But if you use

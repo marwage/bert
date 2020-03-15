@@ -93,11 +93,13 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
       tf.assign(v, (1 - alpha) * v + alpha * avg_v)
       for v, avg_v in zip(tvars, averaged_vars)
     ]
-  # get average loss
-  average_loss = tf.get_variable("average_loss", shape=[])
+  # calculate Exponential moving average
+  alpha = 0.1
+  exponential_moving_average_loss = tf.get_variable("average_loss", shape=[])
   sum_loss = all_reduce(loss)
-  assign_op = tf.assign(average_loss, tf.math.divide(sum_loss, np))
-  tf.summary.scalar("average_loss", average_loss)
+  avg_loss = tf.math.divide(sum_loss, np)
+  assign_op = tf.assign(exponential_moving_average_loss, alpha * avg_loss + (1-alpha) * exponential_moving_average_loss)
+  tf.summary.scalar("average_loss", exponential_moving_average_loss)
   assign_ops.append(assign_op)
   # This is how the model was pre-trained.
   (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
