@@ -94,11 +94,11 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
       for v, avg_v in zip(tvars, averaged_vars)
     ]
   # get average loss
-  average_loss = tf.get_variable("average_loss", shape=[])
-  sum_loss = all_reduce(loss)
-  assign_op = tf.assign(average_loss, tf.math.divide(sum_loss, np))
-  tf.summary.scalar("average_loss", average_loss)
-  assign_ops.append(assign_op)
+  # average_loss = tf.get_variable("average_loss", shape=[])
+  # sum_loss = all_reduce(loss)
+  # assign_op = tf.assign(average_loss, tf.math.divide(sum_loss, np))
+  # tf.summary.scalar("average_loss", average_loss)
+  # assign_ops.append(assign_op)
   # This is how the model was pre-trained.
   (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
 

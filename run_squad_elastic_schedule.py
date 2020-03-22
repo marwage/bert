@@ -1260,7 +1260,7 @@ def main(_):
 
     train_examples = read_squad_examples(
         input_file=FLAGS.train_file, is_training=True)
-    num_train_steps = 4070
+    num_train_steps = 4000
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1315,7 +1315,7 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    hooks=[KungFuElasticTrainHook("16:814,1:814,16:814,1:814,16:814", num_train_steps, FLAGS.output_dir)]
+    hooks=[KungFuElasticTrainHook("16:1000,1:1000,16:1000,1:1000", num_train_steps, FLAGS.output_dir)]
     
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     
