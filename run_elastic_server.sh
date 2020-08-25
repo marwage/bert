@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export KUNGFU_CONFIG_LOG_LEVEL=DEBUG # DEBUG | INFO | WARN | ERROR
+export KUNGFU_CONFIG_LOG_LEVEL=INFO # DEBUG | INFO | WARN | ERROR
 
 KUNGFU_RUN=$HOME/KungFu/bin/kungfu-run
 BERT_BASE_DIR=$HOME/bert/uncased_L-12_H-768_A-12
@@ -30,7 +30,8 @@ $KUNGFU_RUN \
 		--max_seq_length=384 \
 		--doc_stride=128 \
 		--output_dir=$OUTPUT_DIR \
-		--version_2_with_negative=True
+		--version_2_with_negative=True \
+                --num_train_epochs=0.5
 
 pkill -P $$
 
