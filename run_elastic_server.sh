@@ -1,11 +1,14 @@
-#!/bin/zsh
+#!/bin/bash
 
-export KUNGFU_CONFIG_LOG_LEVEL=INFO # DEBUG # or INFO | WARN | ERROR
+export KUNGFU_CONFIG_LOG_LEVEL=DEBUG # DEBUG | INFO | WARN | ERROR
 
 KUNGFU_RUN=$HOME/KungFu/bin/kungfu-run
 BERT_BASE_DIR=$HOME/bert/uncased_L-12_H-768_A-12
 SQUAD_DIR=$HOME/dataset/squad2
 OUTPUT_DIR=tmp
+
+$HOME/KungFu/bin/kungfu-config-server-example \
+    -init workers.json &
 
 $KUNGFU_RUN \
     -w \
@@ -28,3 +31,6 @@ $KUNGFU_RUN \
 		--doc_stride=128 \
 		--output_dir=$OUTPUT_DIR \
 		--version_2_with_negative=True
+
+pkill -P $$
+
