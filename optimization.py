@@ -95,7 +95,7 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
     ]
   # calculate Exponential moving average
   alpha = 0.1
-  exponential_moving_average_loss = tf.get_variable("average_loss", shape=[])
+  exponential_moving_average_loss = tf.get_variable("average_loss", shape=[], trainable=False)
   sum_loss = all_reduce(loss)
   avg_loss = tf.math.divide(sum_loss, np)
   assign_op = tf.assign(exponential_moving_average_loss, alpha * avg_loss + (1-alpha) * exponential_moving_average_loss)

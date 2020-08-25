@@ -21,7 +21,7 @@ from __future__ import print_function
 import re
 import tensorflow as tf
 from kungfu._utils import map_maybe
-from kungfu.tensorflow.ops import (group_all_reduce, spotnik_group_all_reduce, spotnik_all_reduce, peer_info, spotnik_request_variable_with_template, request_variable_with_template)
+from kungfu.tensorflow.ops import (group_all_reduce, spotnik_group_all_reduce, spotnik_all_reduce, peer_info, spotnik_request_variable_with_template, request_variable_with_template, barrier, save_variable)
 
 
 def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, threshold):
@@ -126,36 +126,45 @@ def create_optimizer(loss, init_lr, num_train_steps, num_warmup_steps, use_tpu, 
 
   def pair_fn(optimizer, variables, grads, num_workers, rank):
     target = get_random_peer(num_workers, rank)
-    other_peer = [spotnik_request_variable_with_template(target, v) for v in variables]
-    other_peer_vars = [t[0] if t is not None else None for t in other_peer]
-    not_succeeded = [t[1] for t in other_peer if t is not None]
-    num_not_succeeded = tf.add_n(not_succeeded)
+
+    def init_store(variables):
+      with tf.control_dependencies([tf.group([save_variable(v) for v in variables])]):
+        return barrier()
+
+    init_store_op = tf.cond(tf.equal(tf.train.get_or_create_global_step(), 0),
+      lambda: init_store(variables),
+      tf.no_op)
+    with tf.control_dependencies([init_store_op]):
+      other_peer = [spotnik_request_variable_with_template(target, v) for v in variables]
+      other_peer_vars = [t[0] if t is not None else None for t in other_peer]
+      not_succeeded = [t[1] for t in other_peer if t is not None]
+      num_not_succeeded = tf.add_n(not_succeeded)
+
+    save_model_op = tf.group([save_variable(v) for v in variables])
+
     assign_ops = [
         tf.assign(v, 0.5 * (v + other_v))
         for v, other_v in zip(variables, other_peer_vars)
     ]
 
     with tf.control_dependencies(assign_ops):
-      return tf.cond(tf.math.greater(num_not_succeeded, 0),
-        lambda: tf.no_op(),
-        lambda: optimizer.apply_gradients(zip(grads, variables), global_step=global_step))
-
-  def vanilla_pair_fn(optimizer, variables, grads, num_workers, rank):
-    target = get_random_peer(num_workers, rank)
-    other_peer = [request_variable_with_template(target, v) for v in variables]
-    assign_ops = [
-        tf.assign(v, 0.5 * (v + other_v))
-        for v, other_v in zip(variables, other_peer)
-    ]
-
-    with tf.control_dependencies(assign_ops):
-      return optimizer.apply_gradients(zip(grads, variables), global_step=global_step)
+      with tf.control_dependencies([save_model_op]):
+        return tf.cond(tf.math.greater(num_not_succeeded, 0),
+          lambda: tf.no_op(),
+          lambda: optimizer.apply_gradients(zip(grads, variables), global_step=global_step))
   
   # train_op = tf.case([(tf.math.less_equal(np, 2), lambda: s_sgd_fn(optimizer, tvars, grads, np)),
   #   (tf.math.less_equal(np, 8), lambda: sma_fn(optimizer, tvars, grads, np))],
   #         default=lambda: pair_fn(optimizer, tvars, grads, num_workers, rank), exclusive=True)
-  with tf.control_dependencies([exponential_moving_average_loss_fn(loss)]):
-    train_op = pair_fn(optimizer, tvars, grads, num_workers, rank)
+  
+  # with tf.control_dependencies([exponential_moving_average_loss_fn(loss)]):
+  #   train_op = sma_fn(optimizer, tvars, grads, np)
+
+  train_op = s_sgd_fn(optimizer, tvars, grads, np)
+
+  # train_op = tf.cond(tf.math.less(tf.train.get_or_create_global_step(), 100), 
+  #   lambda: s_sgd_fn(optimizer, tvars, grads, np),
+  #   lambda: sma_fn(optimizer, tvars, grads, np))
 
   # Normally the global step update is done inside of `apply_gradients`.
   # However, `AdamWeightDecayOptimizer` doesn't do this. But if you use

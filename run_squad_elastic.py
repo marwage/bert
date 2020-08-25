@@ -24,13 +24,13 @@ import math
 import os
 import random
 import modeling
-import optimization_spotnik as optimization
+import optimization
 import tokenization
 import six
 import tensorflow as tf
 from kungfu.tensorflow.experimental.hook import ElasticHook
 from datetime import datetime
-from early_stopping import EarlyStoppingHook
+from scaling import ScalingHook
 
 
 flags = tf.flags
@@ -1318,8 +1318,7 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples), EarlyStoppingHook(1.0)]
-    # hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples)]
+    hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples), ScalingHook(FLAGS.train_batch_size)]
     
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     
