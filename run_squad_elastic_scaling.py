@@ -28,6 +28,7 @@ import optimization
 import tokenization
 import six
 import tensorflow as tf
+from kungfu.tensorflow.experimental.hook import ElasticHook
 from scaling import ScalingHook
 from datetime import datetime
 
@@ -1316,8 +1317,9 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    hooks=[ScalingHook(FLAGS.train_batch_size, num_train_steps)]
-    
+    hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples),
+    ScalingHook(FLAGS.train_batch_size, num_train_steps)]
+
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     
     # log end time

@@ -15,6 +15,7 @@ class ScalingHook(tf.train.SessionRunHook):
         self._stop_scaling = False
         self._change_step = 100
         self._throughputs = np.zeros(self._change_step)
+        self._num_training_steps = num_training_steps
         self._output = np.zeros((num_training_steps + 1, 6))
         self._alpha = 0.33
 
@@ -30,7 +31,6 @@ class ScalingHook(tf.train.SessionRunHook):
             now = time.time()
             duration = now - self._start_time
             global_step = run_context.session.run(self._global_step)
-            print("Global step is {}".format(global_step))
             sub_step = global_step % self._change_step
             self._throughputs[sub_step] = self._batch_size / duration
             num_workers = current_cluster_size()
@@ -50,7 +50,7 @@ class ScalingHook(tf.train.SessionRunHook):
                         print("stop scaling")
             after_run_duration = time.time() - now
             self._output[global_step] = [global_step, sub_step, num_workers, duration, self._throughputs[sub_step], after_run_duration]
-            if global_step == 7200:
+            if global_step == self._num_training_steps:
                 fname = "out.csv"
                 np.savetxt(fname, self._output, delimiter=",", header="global_step,sub_step,num_workers,duration,throughput,after_run_duration")
 
