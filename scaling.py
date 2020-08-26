@@ -4,18 +4,18 @@ import json
 import numpy as np
 import urllib
 import os
-from kungfu import current_rank, current_cluster_size
+from kungfu.python import current_rank, current_cluster_size
 
 class ScalingHook(tf.train.SessionRunHook):
-    def __init__(self, batch_size):
+    def __init__(self, batch_size, num_training_steps):
         self._batch_size = batch_size
         self._average_throughput = dict()
-        path = "/home/work/user-job-dir/src/workers.json"
+        path = "scaling_workers.json"
         self._workers = self.read_workers(path)
         self._stop_scaling = False
-        self._change_step = 800
+        self._change_step = 100
         self._throughputs = np.zeros(self._change_step)
-        self._output = np.zeros((7201, 6))
+        self._output = np.zeros((num_training_steps + 1, 6))
         self._alpha = 0.33
 
     def begin(self):
@@ -30,6 +30,7 @@ class ScalingHook(tf.train.SessionRunHook):
             now = time.time()
             duration = now - self._start_time
             global_step = run_context.session.run(self._global_step)
+            print("Global step is {}".format(global_step))
             sub_step = global_step % self._change_step
             self._throughputs[sub_step] = self._batch_size / duration
             num_workers = current_cluster_size()
@@ -50,12 +51,12 @@ class ScalingHook(tf.train.SessionRunHook):
             after_run_duration = time.time() - now
             self._output[global_step] = [global_step, sub_step, num_workers, duration, self._throughputs[sub_step], after_run_duration]
             if global_step == 7200:
-                fname = "/cache/out_dir/out.csv"
+                fname = "out.csv"
                 np.savetxt(fname, self._output, delimiter=",", header="global_step,sub_step,num_workers,duration,throughput,after_run_duration")
 
     def end(self, session):
         if current_rank() == 0:
-            fname = "/cache/out_dir/out.csv"
+            fname = "out.csv"
             np.savetxt(fname, self._output, delimiter=",", header="global_step,sub_step,num_workers,duration,throughput,after_run_duration")
 
     def read_workers(self, path):
