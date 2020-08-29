@@ -27,23 +27,10 @@ import modeling
 import optimization
 import tokenization
 import six
-from datetime import datetime
 import tensorflow as tf
-from kungfu import current_rank, current_cluster_size
-from kungfu.tensorflow.initializer import BroadcastGlobalVariablesHook
-
-
-class StoppingHook(tf.train.SessionRunHook):
-  def __init__(self):
-    self._stop_step = 512
-    
-  def begin(self):
-    self._global_step = tf.train.get_or_create_global_step()
-
-  def after_run(self, run_context, run_values):
-    global_step = run_context.session.run(self._global_step)
-    if global_step >= self._stop_step:
-      run_context.request_stop()
+from kungfu.tensorflow.experimental.hook import ElasticHook
+from kungfu.tensorflow.policy.scaling import ScalingPolicy
+from datetime import datetime
 
 
 flags = tf.flags
@@ -686,16 +673,43 @@ def model_fn_builder(bert_config, init_checkpoint, learning_rate,
       train_op = optimization.create_optimizer(
           total_loss, learning_rate, num_train_steps, num_warmup_steps, use_tpu, FLAGS.optimizer_threshold)
 
-      # Marcel
-      global_step = tf.train.get_or_create_global_step()
-      logging_hook = tf.train.LoggingTensorHook({"global_step" : global_step}, every_n_iter=50)
+      # KungFu
+      # log global_step
+      # global_step = tf.train.get_or_create_global_step()
+      # logging_hook = tf.train.LoggingTensorHook({"global_step" : global_step, "total_loss": total_loss}, every_n_iter=1)
 
       output_spec = tf.contrib.tpu.TPUEstimatorSpec(
           mode=mode,
           loss=total_loss,
           train_op=train_op,
           scaffold_fn=scaffold_fn,
-          training_hooks = [logging_hook])
+          training_hooks = None)
+
+    elif mode == tf.estimator.ModeKeys.EVAL:
+      seq_length = modeling.get_shape_list(input_ids)[1]
+
+      def compute_loss(logits, positions):
+        one_hot_positions = tf.one_hot(
+            positions, depth=seq_length, dtype=tf.float32)
+        log_probs = tf.nn.log_softmax(logits, axis=-1)
+        loss = -tf.reduce_mean(
+            tf.reduce_sum(one_hot_positions * log_probs, axis=-1))
+        return loss
+
+      start_positions = features["start_positions"]
+      end_positions = features["end_positions"]
+
+      start_loss = compute_loss(start_logits, start_positions)
+      end_loss = compute_loss(end_logits, end_positions)
+
+      total_loss = (start_loss + end_loss) / 2.0
+
+      output_spec = tf.contrib.tpu.TPUEstimatorSpec(
+          mode=mode,
+          loss=total_loss,
+          scaffold_fn=scaffold_fn,
+          training_hooks = None)
+
     elif mode == tf.estimator.ModeKeys.PREDICT:
       predictions = {
           "unique_ids": unique_ids,
@@ -751,6 +765,55 @@ def input_fn_builder(input_file, seq_length, is_training, drop_remainder):
     if is_training:
       d = d.repeat()
       d = d.shuffle(buffer_size=300000)
+
+    d = d.apply(
+        tf.contrib.data.map_and_batch(
+            lambda record: _decode_record(record, name_to_features),
+            batch_size=batch_size,
+            drop_remainder=drop_remainder))
+
+    return d
+
+  return input_fn
+
+
+def eval_input_fn_builder(input_file, seq_length, is_training, drop_remainder):
+  """Creates an `input_fn` closure to be passed to TPUEstimator."""
+
+  name_to_features = {
+      "unique_ids": tf.FixedLenFeature([], tf.int64),
+      "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
+      "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
+      "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
+  }
+
+  if is_training:
+    name_to_features["start_positions"] = tf.FixedLenFeature([], tf.int64)
+    name_to_features["end_positions"] = tf.FixedLenFeature([], tf.int64)
+
+  def _decode_record(record, name_to_features):
+    """Decodes a record to a TensorFlow example."""
+    example = tf.parse_single_example(record, name_to_features)
+
+    # tf.Example only supports tf.int64, but the TPU only supports tf.int32.
+    # So cast all int64 to int32.
+    for name in list(example.keys()):
+      t = example[name]
+      if t.dtype == tf.int64:
+        t = tf.to_int32(t)
+      example[name] = t
+
+    return example
+
+  def input_fn(params):
+    """The actual input function."""
+    batch_size = int(FLAGS.train_batch_size)
+
+    # For training, we want a lot of parallel reading and shuffling.
+    # For eval, we want no shuffling and parallel reading doesn't matter.
+    d = tf.data.TFRecordDataset(input_file)
+    if is_training:
+      d = d.take(256)
 
     d = d.apply(
         tf.contrib.data.map_and_batch(
@@ -1161,7 +1224,9 @@ def main(_):
 
   # KungFu
   # use individual output_dir for each process
-  FLAGS.output_dir = os.path.join(FLAGS.output_dir, "p" + str(current_rank()))
+  kungfu_spec = os.getenv("KUNGFU_SELF_SPEC")
+  kungfu_spec = kungfu_spec.replace(":", "-")
+  FLAGS.output_dir = os.path.join(FLAGS.output_dir, kungfu_spec)
 
   tf.gfile.MakeDirs(FLAGS.output_dir)
 
@@ -1178,9 +1243,9 @@ def main(_):
       cluster=tpu_cluster_resolver,
       master=FLAGS.master,
       model_dir=FLAGS.output_dir,
-      save_checkpoints_steps=FLAGS.save_checkpoints_steps,
+      # save_checkpoints_steps=FLAGS.save_checkpoints_steps,
       # KungFu
-      save_summary_steps=10,
+      save_summary_steps=20,
       tpu_config=tf.contrib.tpu.TPUConfig(
           iterations_per_loop=FLAGS.iterations_per_loop,
           num_shards=FLAGS.num_tpu_cores,
@@ -1190,7 +1255,7 @@ def main(_):
   num_train_steps = None
   num_warmup_steps = None
   if FLAGS.do_train:
-    # Marcel
+    # KungFu
     # log start time
     tf.logging.info("Training start time " + str(datetime.now()))
 
@@ -1198,8 +1263,6 @@ def main(_):
         input_file=FLAGS.train_file, is_training=True)
     num_train_steps = int(
         len(train_examples) / FLAGS.train_batch_size * FLAGS.num_train_epochs)
-    # KungFu
-    num_train_steps = num_train_steps // current_cluster_size()
     num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion)
 
   model_fn = model_fn_builder(
@@ -1236,6 +1299,8 @@ def main(_):
     #     output_fn=train_writer.process_feature)
     # train_writer.close()
 
+    num_train_examples = len(train_examples)
+
     tf.logging.info("***** Running training *****")
     tf.logging.info("  Num orig examples = %d", len(train_examples))
     # tf.logging.info("  Num split examples = %d", train_writer.num_features)
@@ -1252,11 +1317,12 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
-    hooks = [BroadcastGlobalVariablesHook()]
+    hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples),
+        ScalingPolicy(FLAGS.train_batch_size, num_train_steps, 100, 0.33,
+            "scaling_workers.json", "127.0.0.1:9100")]
 
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     
-    # KungFu
     # log end time
     tf.logging.info("Training end time " + str(datetime.now()))
 
