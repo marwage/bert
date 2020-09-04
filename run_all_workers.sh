@@ -32,7 +32,7 @@ $KUNGFU_RUN \
 		--doc_stride=128 \
 		--output_dir=$OUTPUT_DIR \
 		--version_2_with_negative=True \
-                --num_train_epochs=0.2
+                --num_train_epochs=2.0
 
 pkill -P $$
 

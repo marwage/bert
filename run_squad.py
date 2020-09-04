@@ -30,7 +30,6 @@ import six
 import tensorflow as tf
 from kungfu.tensorflow.experimental.hook import ElasticHook
 from kungfu.tensorflow.policy import ScalingPolicy, PoliciesHook
-from kungfu.tensorflow.policy import ScalingHook
 from datetime import datetime
 
 
@@ -1319,8 +1318,7 @@ def main(_):
     # KungFu
     # add hook so that all nodes the training with equal variables
     policy = ScalingPolicy(FLAGS.train_batch_size, num_train_steps,
-        100, 0.33, "scaling_workers.json", "127.0.0.1:9100")
-        100, 0.33, "scaling_workers.json", "127.0.0.1:9100")
+        800, 1/3, "scaling_workers.json", "127.0.0.1:9100")
     hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples),
         PoliciesHook([policy], FLAGS.train_batch_size, num_train_examples)]
 
