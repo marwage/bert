@@ -29,7 +29,8 @@ import tokenization
 import six
 import tensorflow as tf
 from kungfu.tensorflow.experimental.hook import ElasticHook
-from kungfu.tensorflow.policy.scaling import ScalingPolicy
+from kungfu.tensorflow.policy import ScalingPolicy, PoliciesHook
+from kungfu.tensorflow.policy import ScalingHook
 from datetime import datetime
 
 
@@ -1258,7 +1259,7 @@ def main(_):
     # KungFu
     # log start time
     tf.logging.info("Training start time " + str(datetime.now()))
-
+    
     train_examples = read_squad_examples(
         input_file=FLAGS.train_file, is_training=True)
     num_train_steps = int(
@@ -1317,9 +1318,11 @@ def main(_):
 
     # KungFu
     # add hook so that all nodes the training with equal variables
+    policy = ScalingPolicy(FLAGS.train_batch_size, num_train_steps,
+        100, 0.33, "scaling_workers.json", "127.0.0.1:9100")
+        100, 0.33, "scaling_workers.json", "127.0.0.1:9100")
     hooks=[ElasticHook(FLAGS.train_batch_size, FLAGS.num_train_epochs, num_train_examples),
-        ScalingPolicy(FLAGS.train_batch_size, num_train_steps, 100, 0.33,
-            "scaling_workers.json", "127.0.0.1:9100")]
+        PoliciesHook([policy], FLAGS.train_batch_size, num_train_examples)]
 
     estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
     

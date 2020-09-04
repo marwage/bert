@@ -9,7 +9,7 @@ SQUAD_DIR=$HOME/dataset/squad2
 OUTPUT_DIR=tmp
 
 $HOME/KungFu/bin/kungfu-config-server-example \
-    -init init_workers.json &
+    -init all_workers.json &
 
 $KUNGFU_RUN \
     -w \
